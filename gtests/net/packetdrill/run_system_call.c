@@ -300,6 +300,51 @@ static int bracketed_arg(struct expression_list *args,
 	return STATUS_OK;
 }
 
+static int bracketed_list_arg(struct expression_list *args,
+			 int index, struct expression_list **out_list, char **error)
+{
+	struct expression *expression;
+
+	*out_list = NULL;
+	expression = get_arg(args, index, error);
+	if (expression == NULL)
+		return STATUS_ERR;
+	if (check_type(expression, EXPR_LIST, error))
+		return STATUS_ERR;
+	*out_list = expression->value.list;
+	return STATUS_OK;
+}
+
+static int timeval_bracketed_arg(struct expression_list *args,
+			     int index, struct timeval *time, char **error)
+{
+	struct expression_list *list = NULL;
+	int len = 0;
+	int i = 0;
+	int value[2] = {-1, -1};
+
+	if (bracketed_list_arg(args, index, &list, error))
+		return STATUS_ERR;
+
+	len = expression_list_length(list);
+	if (len != 2)
+		return STATUS_ERR;
+
+	for (i = 0; i < len; i++) {
+		if (list == NULL)
+			return STATUS_ERR;
+
+		if (get_s32(list->expression, value + i, error))
+			return STATUS_ERR;
+
+		list = list->next;
+	}
+
+	time->tv_sec = value[0];
+	time->tv_usec = value[1];
+	return STATUS_OK;
+}
+
 /* Return the value of the argument with the given index, and verify
  * that it has the expected type: a list with a single s32.
  */
@@ -2717,6 +2762,7 @@ static int syscall_setsockopt(struct state *state, struct syscall_spec *syscall,
 	int script_fd, live_fd, level, optname, optval_s32, optlen, result;
 	void *optval = NULL;
 	struct expression *val_expression;
+	struct timeval time = {0};
 
 	if (check_arg_count(args, 5, error))
 		return STATUS_ERR;
@@ -2745,9 +2791,15 @@ static int syscall_setsockopt(struct state *state, struct syscall_spec *syscall,
 	} else if (val_expression->type == EXPR_STRING) {
 		optval = val_expression->value.buf.ptr;
 	} else if (val_expression->type == EXPR_LIST) {
-		if (s32_bracketed_arg(args, 3, &optval_s32, error))
-			return STATUS_ERR;
-		optval = &optval_s32;
+		if ((optname == SO_SNDTIMEO) || (optname == SO_RCVTIMEO)) {
+			if (timeval_bracketed_arg(args, 3, &time, error))
+				return STATUS_ERR;
+			optval = &time;
+		} else {
+			if (s32_bracketed_arg(args, 3, &optval_s32, error))
+				return STATUS_ERR;
+			optval = &optval_s32;
+		}
 	} else {
 		asprintf(error, "unsupported setsockopt value type: %s",
 			 expression_type_to_string(
